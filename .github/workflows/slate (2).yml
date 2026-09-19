@@ -1,0 +1,145 @@
+# Three runs a week.
+#
+#   Wednesday  open the new week: grade last week from final scores, then load
+#              this week's games. Runs before any kickoff, so every game has a
+#              real line and Thursday/Friday games are still pickable.
+#
+#   Saturday   re-price games that have not kicked off yet. It will NOT move a
+#              line on a game someone has already picked, because that would
+#              change what their pick meant.
+#
+#   Grading    four passes timed to when windows of games finish, so the board
+#              updates through the day rather than all at once. Each pass is
+#              additive and idempotent: it scores whatever is final and leaves
+#              everything else alone, so a later pass catches the stragglers.
+#
+# No secrets: GITHUB_TOKEN is issued to the workflow automatically, and the
+# Supabase values below are the public ones already shipped in config.js.
+
+name: Update slate
+
+on:
+  schedule:
+    # Cron is UTC and does NOT follow daylight saving. Times below are for EDT
+    # (UTC-4). Once EST begins on 1 Nov 2026 each fires an hour earlier in local
+    # time; grading is additive and Monday is the backstop, so nothing is lost.
+    - cron: "0 12 * * 3"       # Wed 12:00 UTC — 8:00am ET  open the week
+    - cron: "0 12 * * 6"       # Sat 12:00 UTC — 8:00am ET  re-price before kickoffs
+    # Grade every 30 minutes from 4:00pm to 11:30pm ET on Saturday. The second
+    # line is the same evening: 8:00pm ET onward is already Sunday in UTC.
+    - cron: "0,30 20-23 * * 6" # Sat 20:00-23:30 UTC — 4:00pm-7:30pm ET
+    - cron: "0,30 0-3 * * 0"   # Sun 00:00-03:30 UTC — 8:00pm-11:30pm ET
+    - cron: "0 12 * * 1"       # Mon 12:00 UTC — 8:00am ET  final sweep
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "What to do"
+        type: choice
+        options: [probe, open-week, grade, refresh]
+        default: probe
+      week:
+        description: "Force a week number (open-week only; blank = ESPN's)"
+        type: string
+        default: ""
+      force_reprice:
+        description: "Refresh: move lines even on games already picked"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: slate
+  cancel-in-progress: false
+
+env:
+  SUPABASE_URL: "https://yjnagojqhlyfdpjhiwma.supabase.co"
+  SUPABASE_KEY: "sb_publishable_WvjzTzgDnYkhmcjV3aC9Pg_Jvc-_UMg"
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      # Each cron maps to a mode. Anything unrecognised falls through to
+      # grading, which is the only mode that cannot destroy anything.
+      - name: Decide mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            case "${{ github.event.schedule }}" in
+              "0 12 * * 3") echo "mode=open-week" >> "$GITHUB_OUTPUT" ;;
+              "0 12 * * 6") echo "mode=refresh"   >> "$GITHUB_OUTPUT" ;;
+              *)            echo "mode=grade"     >> "$GITHUB_OUTPUT" ;;
+            esac
+          else
+            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Mode: $(cat "$GITHUB_OUTPUT" | tail -1)"
+
+      - name: Probe
+        if: steps.mode.outputs.mode == 'probe'
+        run: node scripts/build-slate.mjs --probe
+
+      - name: Open the new week
+        if: steps.mode.outputs.mode == 'open-week'
+        run: |
+          if [ -n "${{ inputs.week }}" ]; then
+            node scripts/build-slate.mjs --week "${{ inputs.week }}"
+          else
+            node scripts/build-slate.mjs
+          fi
+
+      - name: Grade the current week
+        if: steps.mode.outputs.mode == 'grade'
+        run: node scripts/build-slate.mjs --grade
+
+      - name: Refresh lines
+        if: steps.mode.outputs.mode == 'refresh'
+        run: |
+          if [ "${{ inputs.force_reprice }}" = "true" ]; then
+            node scripts/build-slate.mjs --refresh --force-reprice
+          else
+            node scripts/build-slate.mjs --refresh
+          fi
+
+      - name: Sanity-check the result
+        if: steps.mode.outputs.mode != 'probe'
+        run: |
+          node -e '
+            const s = JSON.parse(require("fs").readFileSync("slate.json","utf8"));
+            const w = s.weeks[String(s.currentWeek)];
+            if (!w || !Array.isArray(w.games) || !w.games.length) {
+              throw new Error("current week has no games");
+            }
+            for (const g of w.games) {
+              for (const k of ["id","away","home","kickoff","spread","total"]) {
+                if (g[k] === undefined || g[k] === null) {
+                  throw new Error(`game ${g.id} is missing ${k}`);
+                }
+              }
+              if (Number.isNaN(Date.parse(g.kickoff))) {
+                throw new Error(`game ${g.id} has an unparseable kickoff`);
+              }
+            }
+            console.log(`slate.json OK — week ${s.currentWeek}, ${w.games.length} games`);
+          '
+
+      - name: Commit if anything changed
+        if: steps.mode.outputs.mode != 'probe'
+        run: |
+          if git diff --quiet -- slate.json; then
+            echo "slate.json unchanged — nothing to commit"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add slate.json
+          git commit -m "${{ steps.mode.outputs.mode }}: slate week $(node -p "require('./slate.json').currentWeek")"
+          git push
