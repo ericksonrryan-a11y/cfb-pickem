@@ -2721,10 +2721,9 @@
      "awayRank": null,
      "homeRank": 16,
      "kickoff": "2026-11-07T20:30:00Z",
-     "spread": 0,
-     "total": 52.5,
-     "network": "ACC Network",
-     "note": "Verify before kickoff — line unavailable, treated as a pick'em; total unavailable, estimated"
+     "spread": -46.5,
+     "total": 57.5,
+     "network": "ACC Network"
     },
     {
      "id": "401856851",
@@ -2752,7 +2751,7 @@
      "awayRank": 25,
      "homeRank": null,
      "kickoff": "2026-11-07T23:00:00Z",
-     "spread": 17.5,
+     "spread": 16.5,
      "total": 68.5,
      "network": "USA Net"
     },
@@ -2842,8 +2841,8 @@
      "awayRank": null,
      "homeRank": 15,
      "kickoff": "2026-11-08T02:30:00Z",
-     "spread": -17.5,
-     "total": 65.5,
+     "spread": -16.5,
+     "total": 66.5,
      "network": "ESPN"
     }
    ],
